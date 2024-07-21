@@ -1,0 +1,133 @@
+import os
+import numpy as np
+import matplotlib
+import glob
+import matplotlib.pyplot as plt
+import pandas as pd
+from scipy import stats, optimize
+from pandas import DataFrame, Series
+import seaborn as sns
+import random as rd
+import scipy.stats
+import multiprocessing
+from scipy.stats import norm
+import statsmodels.stats.moment_helpers
+from scipy.stats import beta
+from scipy.optimize import minimize
+import statsmodels.formula.api as smf
+from mpl_toolkits.mplot3d import Axes3D
+from mpl_toolkits import mplot3d
+from matplotlib import cm
+import os.path as op
+from matplotlib.ticker import LinearLocator, FormatStrFormatter
+
+import openai
+import pandas as pd
+os.environ["OPENAI_API_KEY"]=APIKEY
+file = open('Decision questions - Copy.csv')
+df = pd.read_csv(r'C:/Users/shing/OneDrive - email.ucr.edu/Desktop/API Chat-GPT/Decision questions - Copy.csv')
+#from langchain.agents.agent_types import AgentType
+#from langchain_experimental.agents.agent_toolkits import create_csv_agent
+#from langchain_openai import ChatOpenAI, OpenAI
+#from langchain.prompts import PromptTemplate
+#from langchain_community.output_parsers.rail_parser import GuardrailsOutputParser
+
+
+#exponential discounting
+def exponential(A,d,k):
+    return A * 1.0/(1.0+k*d)
+
+#get log likelihood of choices under exponential discounting model
+def get_LL(params,sub_df):
+    k,m = params
+
+    #transform the values into continous vlues negative infiniti and positive infinit
+    k = scipy.stats.logistic.cdf(k)
+    m = scipy.stats.logistic.cdf(m)*10
+
+    LL = 0
+    for i in range(sub_df.shape[0]): #SV = subjective value
+        SV_SS = exponential(sub_df.loc[i,'Smaller sooner amount ($)'],
+                            sub_df.loc[i,'Smaller sooner delay (days)'],
+                            k)
+        SV_LL = exponential(sub_df.loc[i,'Larger later amount ($)'],
+                            sub_df.loc[i,'Larger later delay (days)'],
+                            k)
+        
+        #this quation determines probability of the choice as a function of the subjective values
+        #of the two options
+        p = 1 / (1 + np.exp(-1*m*(SV_SS-SV_LL)) ) 
+
+        if sub_df.loc[i,'SS or LL'] == 'LL':
+            p = 1-p
+        LL += np.log(p)
+    return -1*LL
+
+
+results_df = []
+
+#run 10 "experiments" of asking the gpt all the questions. In each experiment
+#collect the responses, fit a model to the data summarizing the data with exponential discountin
+#and store those summary values from the model
+for iteration in range (10): 
+   gpt_questions = [] #list of questions for GPT
+   gpt_short_answers = [] #list of answers for GPT
+   gpt_raw_answers = [] #list of raw answers from GPT
+   binary_answer = [] #list of binary answers from GPT
+   
+
+   for n, row in df.iterrows(): #loop through rows of dataframe
+
+        #extract question information from relevant columns in each row
+        ss_amount = row['Smaller sooner amount ($)']
+        ss_delay = row['Smaller sooner delay (days)']
+        ll_amount = row['Larger later amount ($)']
+        ll_delay = row['Larger later delay (days)']
+        question_str = 'Would you rather have $' + str(int(ss_amount)) + ' in ' + str(int(ss_delay)) \
+            + ' days or $' + str(int(ll_amount)) + ' in ' + str(int(ll_delay)) + ' days? Answer without explanation.'
+        question_str = question_str.replace('in 0 days','now') #1. question has been created.
+
+        gpt_questions.append(question_str)                     #2. question has been added to a list
+
+        response = openai.chat.completions.create(
+            model="gpt-4-turbo",
+            messages = [
+                {"role": "system", "content": "Pick one."},
+                {"role": "user", "content": question_str},          #3. Chatgpt runs through the question just created saved in gpt_questions
+                ])
+        gpt_raw_answers.append(response.choices[0].message.content)       #4. Gpt's answer has been added to the gpt_raw_answers list
+        if str(int(ll_amount)) in response.choices[0].message.content:
+            response.choices[0].message.content = "LL"
+            binary_answer.append("1")
+        elif str(int(ss_amount)) in response.choices[0].message.content:
+            response.choices[0].message.content = "SS"
+            binary_answer.append("0")
+        gpt_short_answers.append(response.choices[0].message.content)
+
+   df['gpt_questions'] = gpt_questions
+   df['gpt_raw_answers'] = gpt_raw_answers
+   df['SS or LL'] = gpt_short_answers
+   df['binary_answer'] = binary_answer
+   df.to_csv('Decision questions - Copy.csv')
+
+
+
+    #this will be new data with new responses from gPT in each iteration
+   NewData = pd.read_csv(r'C:/Users/shing/OneDrive - email.ucr.edu/Desktop/API Chat-GPT/Decision questions - Copy.csv')
+   res = minimize(get_LL, [-4.5, -1], 
+               args = (NewData),
+               method = 'BFGS')
+   print(res)
+   
+   k = scipy.stats.logistic.cdf(res.x[0])
+   m = scipy.stats.logistic.cdf(res.x[1])*10
+   
+   temp_df = pd.DataFrame({'iteration': iteration,
+                        'k':k,
+                        'm':m}, index = [0])
+   results_df = results_df.append(temp_df.copy())
+
+results_df = pd.concat(results_df)
+
+
+#ran on VSCode
